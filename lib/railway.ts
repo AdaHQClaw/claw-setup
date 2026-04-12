@@ -71,7 +71,8 @@ export async function provisionClaw(params: {
     OPENCLAW_WORKSPACE_DIR: "/data/workspace",
     TELEGRAM_BOT_TOKEN: params.telegramToken,
     ANTHROPIC_API_KEY: params.anthropicKey,
-    OPENCLAW_SOUL: Buffer.from(params.soulContent).toString("base64"),
+    // SOUL content stored as base64 — written to workspace at startup
+    OPENCLAW_SOUL_B64: Buffer.from(params.soulContent).toString("base64"),
   };
   if (params.openaiKey) envVars.OPENAI_API_KEY = params.openaiKey;
 
@@ -82,24 +83,57 @@ export async function provisionClaw(params: {
 
   // 4. Configure service instance (start command + healthcheck)
   //
-  // The start command:
-  //   1. Writes a proper openclaw.json before the gateway starts.
-  //      This is required because non-loopback deployments (Railway containers)
-  //      must set gateway.controlUi.allowedOrigins or the Control UI/dashboard
-  //      will reject all WebSocket connections with "origin not allowed".
-  //   2. Uses RAILWAY_PUBLIC_DOMAIN (injected automatically by Railway at runtime)
-  //      for the allowedOrigins list.
-  //   3. Sets bind: "lan" so the gateway listens on 0.0.0.0 inside the container
-  //      (Railway bridges traffic; loopback-only bind would make it unreachable).
-  //   4. Configures token auth using the OPENCLAW_GATEWAY_TOKEN env var.
+  // The start command writes a complete openclaw.json and SOUL.md before launching.
+  //
+  // Why each setting is needed:
+  //   gateway.mode=local         — required, gateway refuses to start otherwise
+  //   gateway.bind=lan           — Railway bridge networking requires 0.0.0.0, not loopback
+  //   gateway.auth               — token auth using the generated OPENCLAW_GATEWAY_TOKEN
+  //   controlUi.allowedOrigins   — REQUIRED for non-loopback: without this, all browser
+  //                                WebSocket connections are rejected with "origin not allowed"
+  //   controlUi.dangerouslyDisableDeviceAuth — without this, every new browser triggers
+  //                                a pairing flow requiring `openclaw devices approve` via
+  //                                shell access — unusable for end users
+  //   channels.telegram          — explicit config with dmPolicy:"open" so the bot accepts
+  //                                messages immediately; default is "pairing" which blocks
+  //                                all new users until they complete an out-of-band approval
+  //   agents.defaults.workspace  — sets the workspace directory where SOUL.md lives
+  //
+  // RAILWAY_PUBLIC_DOMAIN is injected automatically by Railway at container start.
   const startCommand =
-    `node -e "const fs=require('fs'),path=require('path');` +
+    `node -e "` +
+    `const fs=require('fs'),path=require('path');` +
     `const sd=process.env.OPENCLAW_STATE_DIR||'/data/.openclaw';` +
+    `const wd=process.env.OPENCLAW_WORKSPACE_DIR||'/data/workspace';` +
     `fs.mkdirSync(sd,{recursive:true});` +
-    `const cfg={gateway:{mode:'local',bind:'lan',` +
-    `auth:{mode:'token',token:process.env.OPENCLAW_GATEWAY_TOKEN},` +
-    `controlUi:{basePath:'/openclaw',allowedOrigins:['https://'+process.env.RAILWAY_PUBLIC_DOMAIN]}}};` +
-    `fs.writeFileSync(path.join(sd,'openclaw.json'),JSON.stringify(cfg));"` +
+    `fs.mkdirSync(wd,{recursive:true});` +
+    // Write SOUL.md to workspace
+    `if(process.env.OPENCLAW_SOUL_B64){` +
+    `  fs.writeFileSync(path.join(wd,'SOUL.md'),Buffer.from(process.env.OPENCLAW_SOUL_B64,'base64').toString('utf8'));` +
+    `}` +
+    // Write full openclaw.json
+    `const domain=process.env.RAILWAY_PUBLIC_DOMAIN||'';` +
+    `const cfg={` +
+    `  gateway:{` +
+    `    mode:'local',bind:'lan',` +
+    `    auth:{mode:'token',token:process.env.OPENCLAW_GATEWAY_TOKEN},` +
+    `    controlUi:{` +
+    `      basePath:'/openclaw',` +
+    `      allowedOrigins:domain?['https://'+domain]:[],` +
+    `      dangerouslyDisableDeviceAuth:true` +
+    `    }` +
+    `  },` +
+    `  agents:{defaults:{workspace:wd}},` +
+    `  channels:{` +
+    `    telegram:{` +
+    `      enabled:true,` +
+    `      dmPolicy:'open',` +
+    `      allowFrom:['*']` +
+    `    }` +
+    `  }` +
+    `};` +
+    `fs.writeFileSync(path.join(sd,'openclaw.json'),JSON.stringify(cfg));` +
+    `"` +
     ` && openclaw gateway --port 8080`;
 
   await gql(token,
