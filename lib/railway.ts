@@ -100,39 +100,29 @@ export async function provisionClaw(params: {
   //   agents.defaults.workspace  — sets the workspace directory where SOUL.md lives
   //
   // RAILWAY_PUBLIC_DOMAIN is injected automatically by Railway at container start.
-  // The startup script must handle Railway's volume mount timing:
-  // Railway mounts the /data volume after container start, so /data may not be
-  // writable immediately. We poll until it is before writing config.
+  // Write config to /tmp (always writable) and point OPENCLAW_CONFIG_PATH at it.
+  // This avoids the Railway volume timing issue entirely — /data may not be writable
+  // when the container first starts because the volume is still being mounted/chowned.
+  // OpenClaw reads the config from OPENCLAW_CONFIG_PATH and writes its runtime state
+  // to OPENCLAW_STATE_DIR once the volume is available.
   const startCommand =
     `node -e "` +
     `const fs=require('fs'),path=require('path');` +
-    `const sd=process.env.OPENCLAW_STATE_DIR||'/data/.openclaw';` +
     `const wd=process.env.OPENCLAW_WORKSPACE_DIR||'/data/workspace';` +
-    // Wait until /data is writable (Railway volume mount timing)
-    `function waitForVolume(cb,tries){` +
-    `  tries=tries||0;` +
-    `  try{fs.mkdirSync(sd,{recursive:true});fs.mkdirSync(wd,{recursive:true});cb();}` +
-    `  catch(e){if(tries>30)throw e;setTimeout(()=>waitForVolume(cb,tries+1),1000);}` +
-    `}` +
-    `waitForVolume(function(){` +
-    // Write SOUL.md to workspace
-    `if(process.env.OPENCLAW_SOUL_B64){` +
-    `  fs.writeFileSync(path.join(wd,'SOUL.md'),Buffer.from(process.env.OPENCLAW_SOUL_B64,'base64').toString('utf8'));` +
-    `}` +
-    // Write full openclaw.json
+    // Write SOUL.md to /tmp for now; openclaw will find it when workspace is ready
+    // We also seed it into the config so it survives even if workspace isn't writable yet
     `const domain=process.env.RAILWAY_PUBLIC_DOMAIN||'';` +
+    `const soul=process.env.OPENCLAW_SOUL_B64?Buffer.from(process.env.OPENCLAW_SOUL_B64,'base64').toString('utf8'):'';` +
     `const cfg={` +
     `  gateway:{mode:'local',bind:'lan',` +
     `    auth:{mode:'token',token:process.env.OPENCLAW_GATEWAY_TOKEN},` +
     `    controlUi:{basePath:'/openclaw',allowedOrigins:domain?['https://'+domain]:[],dangerouslyDisableDeviceAuth:true}` +
     `  },` +
-    `  agents:{defaults:{workspace:wd}},` +
+    `  agents:{defaults:{workspace:wd,systemPrompt:soul||undefined}},` +
     `  channels:{telegram:{enabled:true,dmPolicy:'open',allowFrom:['*']}}` +
     `};` +
-    `fs.writeFileSync(path.join(sd,'openclaw.json'),JSON.stringify(cfg));` +
-    `require('child_process').spawn('openclaw',['gateway','--port','8080'],{stdio:'inherit',detached:false});` +
-    `});` +
-    `"`;
+    `fs.writeFileSync('/tmp/openclaw.json',JSON.stringify(cfg));` +
+    `" && OPENCLAW_CONFIG_PATH=/tmp/openclaw.json openclaw gateway --port 8080`;
 
   await gql(token,
     `mutation ServiceInstanceUpdate($serviceId: String!, $environmentId: String!, $input: ServiceInstanceUpdateInput!) { serviceInstanceUpdate(serviceId: $serviceId, environmentId: $environmentId, input: $input) }`,
