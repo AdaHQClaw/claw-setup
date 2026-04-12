@@ -67,8 +67,6 @@ export async function provisionClaw(params: {
   const envVars: Record<string, string> = {
     OPENCLAW_GATEWAY_PORT: "8080",
     OPENCLAW_GATEWAY_TOKEN: gatewayToken,
-    OPENCLAW_GATEWAY_MODE: "local",
-    OPENCLAW_GATEWAY_AUTH: "token",
     OPENCLAW_STATE_DIR: "/data/.openclaw",
     OPENCLAW_WORKSPACE_DIR: "/data/workspace",
     TELEGRAM_BOT_TOKEN: params.telegramToken,
@@ -83,13 +81,34 @@ export async function provisionClaw(params: {
   );
 
   // 4. Configure service instance (start command + healthcheck)
+  //
+  // The start command:
+  //   1. Writes a proper openclaw.json before the gateway starts.
+  //      This is required because non-loopback deployments (Railway containers)
+  //      must set gateway.controlUi.allowedOrigins or the Control UI/dashboard
+  //      will reject all WebSocket connections with "origin not allowed".
+  //   2. Uses RAILWAY_PUBLIC_DOMAIN (injected automatically by Railway at runtime)
+  //      for the allowedOrigins list.
+  //   3. Sets bind: "lan" so the gateway listens on 0.0.0.0 inside the container
+  //      (Railway bridges traffic; loopback-only bind would make it unreachable).
+  //   4. Configures token auth using the OPENCLAW_GATEWAY_TOKEN env var.
+  const startCommand =
+    `node -e "const fs=require('fs'),path=require('path');` +
+    `const sd=process.env.OPENCLAW_STATE_DIR||'/data/.openclaw';` +
+    `fs.mkdirSync(sd,{recursive:true});` +
+    `const cfg={gateway:{mode:'local',bind:'lan',` +
+    `auth:{mode:'token',token:process.env.OPENCLAW_GATEWAY_TOKEN},` +
+    `controlUi:{basePath:'/openclaw',allowedOrigins:['https://'+process.env.RAILWAY_PUBLIC_DOMAIN]}}};` +
+    `fs.writeFileSync(path.join(sd,'openclaw.json'),JSON.stringify(cfg));"` +
+    ` && openclaw gateway --port 8080`;
+
   await gql(token,
     `mutation ServiceInstanceUpdate($serviceId: String!, $environmentId: String!, $input: ServiceInstanceUpdateInput!) { serviceInstanceUpdate(serviceId: $serviceId, environmentId: $environmentId, input: $input) }`,
     {
       serviceId,
       environmentId,
       input: {
-        startCommand: "openclaw gateway --port 8080 --bind auto --allow-unconfigured",
+        startCommand,
         healthcheckPath: "/openclaw/",
         restartPolicyType: "ON_FAILURE",
       },
