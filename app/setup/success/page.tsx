@@ -75,39 +75,46 @@ function SuccessContent() {
               Your gateway token is shown <strong>once only</strong> — we don&apos;t store it. Save it somewhere safe like a notes app or password manager.
             </p>
 
-            <div className="ml-10 space-y-3">
-              {/* Token */}
-              <div>
-                <p className="text-xs text-amber-600 font-medium uppercase tracking-wide mb-1">Your gateway token</p>
+            <div className="ml-10 space-y-4">
+
+              {/* Step 1: Copy token */}
+              <div className="bg-white border border-amber-200 rounded-xl p-4">
+                <p className="text-xs font-bold text-amber-900 mb-2">Step 1 — Copy your gateway token</p>
                 <div className="flex items-center gap-2">
-                  <code className="text-xs bg-white border border-amber-200 px-3 py-2 rounded-lg flex-1 break-all font-mono leading-relaxed">
+                  <code className="text-xs bg-amber-50 border border-amber-200 px-3 py-2 rounded-lg flex-1 break-all font-mono leading-relaxed">
                     {token}
                   </code>
                   <button onClick={copyToken}
-                    className="shrink-0 px-3 py-2 bg-amber-100 hover:bg-amber-200 text-amber-800 text-xs font-semibold rounded-lg transition-colors">
-                    {tokenCopied ? "✓ Copied" : "Copy"}
+                    className="shrink-0 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-lg transition-colors">
+                    {tokenCopied ? "✓ Copied!" : "Copy"}
                   </button>
                 </div>
               </div>
 
-              {/* How to use it */}
-              <div className="bg-white border border-amber-100 rounded-xl p-4">
-                <p className="text-xs font-semibold text-amber-800 mb-2">How to open the dashboard:</p>
-                <ol className="text-xs text-amber-700 space-y-1 list-decimal list-inside">
-                  <li>Click the dashboard link below — it will open and ask for a token</li>
-                  <li>Paste your gateway token into the box and press Enter</li>
-                  <li>You&apos;re in — bookmark it for next time</li>
-                </ol>
-                <p className="text-xs text-amber-600 mt-2">
-                  <strong>Tip:</strong> You can also use this one-click link that fills the token in automatically (only use this on your own device):
-                </p>
-                {dashboardWithToken && (
-                  <a href={dashboardWithToken} target="_blank" rel="noopener noreferrer"
-                    className="mt-2 block text-xs text-indigo-600 underline break-all">
-                    Open dashboard with token pre-filled →
+              {/* Step 2: Open dashboard */}
+              <div className="bg-white border border-amber-200 rounded-xl p-4">
+                <p className="text-xs font-bold text-amber-900 mb-2">Step 2 — Open your dashboard</p>
+                {dashboardUrl && (
+                  <a href={dashboardUrl} target="_blank" rel="noopener noreferrer"
+                    className="flex items-center justify-between gap-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-semibold px-4 py-3 rounded-lg transition-colors">
+                    <span>Open {name}&apos;s dashboard →</span>
+                    <span className="text-indigo-200 text-xs truncate max-w-[160px]">{domain}</span>
                   </a>
                 )}
               </div>
+
+              {/* Step 3: Paste token */}
+              <div className="bg-white border border-amber-200 rounded-xl p-4">
+                <p className="text-xs font-bold text-amber-900 mb-2">Step 3 — Paste the token and press Connect</p>
+                <p className="text-xs text-amber-700">When the dashboard opens, you&apos;ll see a box asking for a gateway token. Paste the token you copied in Step 1, then press <strong>Connect</strong>. You&apos;re in.</p>
+              </div>
+
+              {/* Step 4: Bookmark */}
+              <div className="bg-white border border-amber-200 rounded-xl p-4">
+                <p className="text-xs font-bold text-amber-900 mb-1">Step 4 — Bookmark the page</p>
+                <p className="text-xs text-amber-700">Once you&apos;re inside the dashboard, <strong>bookmark it in your browser</strong> so you can find it again. The token is only shown here once — if you lose it, you won&apos;t be able to access the dashboard.</p>
+              </div>
+
             </div>
           </div>
         )}
