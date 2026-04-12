@@ -91,7 +91,12 @@ const cfg = {
       dangerouslyDisableDeviceAuth: true
     }
   },
-  agents: { defaults: { workspace: wd } },
+  agents: {
+    defaults: {
+      workspace: wd,
+      model: { primary: 'anthropic/claude-sonnet-4-5' }
+    }
+  },
   channels: { telegram: { enabled: true, dmPolicy: 'open', allowFrom: ['*'] } }
 };
 fs.mkdirSync(wd, { recursive: true });
