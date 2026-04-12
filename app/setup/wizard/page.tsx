@@ -4,6 +4,8 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 
 type WizardData = {
+  firstName: string;
+  email: string;
   clawName: string;
   anthropicKey: string;
   anthropicValid: boolean;
@@ -18,7 +20,7 @@ type WizardData = {
   };
 };
 
-const TOTAL_STEPS = 5;
+const TOTAL_STEPS = 6;
 
 const NAME_SUGGESTIONS = ["Max", "Nova", "Aria", "Scout"];
 
@@ -26,6 +28,8 @@ export default function WizardPage() {
   const router = useRouter();
   const [step, setStep] = useState(1);
   const [data, setData] = useState<WizardData>({
+    firstName: "",
+    email: "",
     clawName: "",
     anthropicKey: "",
     anthropicValid: false,
@@ -112,6 +116,8 @@ export default function WizardPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           clawName: data.clawName,
+          firstName: data.firstName,
+          email: data.email,
           anthropicKey: data.anthropicKey,
           telegramToken: data.telegramToken,
           telegramUsername: data.telegramUsername,
@@ -190,10 +196,49 @@ export default function WizardPage() {
 
         {!provisioning && (
           <>
-            {/* Step 1: Name */}
+            {/* Step 1: Your details */}
             {step === 1 && (
               <StepCard>
-                <StepHeading emoji="👋" title="What should we call your AI assistant?" />
+                <StepHeading emoji="👋" title="Let's get started" />
+                <p className="text-gray-500 mb-6">We just need your name and email so we can keep you updated.</p>
+                <div className="space-y-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">First name</label>
+                    <input
+                      type="text"
+                      value={data.firstName}
+                      onChange={(e) => setData((d) => ({ ...d, firstName: e.target.value }))}
+                      placeholder="e.g. Jamie"
+                      className="w-full border-2 border-gray-200 focus:border-indigo-500 rounded-xl px-5 py-4 outline-none transition-colors"
+                      maxLength={50}
+                      autoFocus
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">Email address</label>
+                    <input
+                      type="email"
+                      value={data.email}
+                      onChange={(e) => setData((d) => ({ ...d, email: e.target.value }))}
+                      placeholder="you@example.com"
+                      className="w-full border-2 border-gray-200 focus:border-indigo-500 rounded-xl px-5 py-4 outline-none transition-colors"
+                      maxLength={254}
+                    />
+                    <p className="text-xs text-gray-400 mt-2">We won&apos;t spam you. Used for support only.</p>
+                  </div>
+                </div>
+                <NavButtons
+                  onNext={next}
+                  nextDisabled={data.firstName.trim().length < 1 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(data.email)}
+                  showBack={false}
+                />
+              </StepCard>
+            )}
+
+            {/* Step 2: Claw name */}
+            {step === 2 && (
+              <StepCard>
+                <StepHeading emoji="🤖" title={`Hi ${data.firstName}! What should we call your AI assistant?`} />
                 <p className="text-gray-500 mb-6">Pick something you like — you can always change it later.</p>
                 <input
                   type="text"
@@ -217,115 +262,69 @@ export default function WizardPage() {
                 </div>
                 <NavButtons
                   onNext={next}
+                  onBack={back}
                   nextDisabled={data.clawName.trim().length < 2}
-                  showBack={false}
                 />
               </StepCard>
             )}
 
-            {/* Step 2: Anthropic Key */}
-            {step === 2 && (
+            {/* Step 3: Anthropic Key */}
+            {step === 3 && (
               <StepCard>
                 <StepHeading emoji="🧠" title={`Paste your Anthropic API key`} />
                 <p className="text-gray-500 mb-6">This is the AI engine that powers {data.clawName}. It&apos;s never stored anywhere except inside your Claw.</p>
-                <div className="relative">
-                  <input
-                    type="password"
-                    value={data.anthropicKey}
-                    onChange={(e) => {
-                      setData((d) => ({ ...d, anthropicKey: e.target.value, anthropicValid: false }));
-                      setError("");
-                    }}
-                    placeholder="sk-ant-..."
-                    className="w-full border-2 border-gray-200 focus:border-indigo-500 rounded-xl px-5 py-4 outline-none transition-colors font-mono text-sm"
-                    autoFocus
-                  />
-                </div>
+                <input
+                  type="password"
+                  value={data.anthropicKey}
+                  onChange={(e) => {
+                    setData((d) => ({ ...d, anthropicKey: e.target.value, anthropicValid: false }));
+                    setError("");
+                  }}
+                  placeholder="sk-ant-..."
+                  className="w-full border-2 border-gray-200 focus:border-indigo-500 rounded-xl px-5 py-4 outline-none transition-colors font-mono text-sm"
+                  autoFocus
+                />
                 <p className="text-xs text-gray-400 mt-2">Starts with <code className="bg-gray-100 px-1 rounded">sk-ant-</code></p>
-
                 {!data.anthropicValid && (
-                  <button
-                    onClick={validateAnthropic}
-                    disabled={loading || data.anthropicKey.length < 10}
-                    className="mt-4 w-full bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-200 disabled:text-gray-400 text-white font-semibold py-3 rounded-xl transition-colors"
-                  >
+                  <button onClick={validateAnthropic} disabled={loading || data.anthropicKey.length < 10}
+                    className="mt-4 w-full bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-200 disabled:text-gray-400 text-white font-semibold py-3 rounded-xl transition-colors">
                     {loading ? "Verifying..." : "Validate key →"}
                   </button>
                 )}
-
-                {data.anthropicValid && (
-                  <div className="mt-4 flex items-center gap-2 text-green-600 font-medium">
-                    <span className="text-xl">✅</span>
-                    <span>Key verified</span>
-                  </div>
-                )}
-
-                {error && (
-                  <div className="mt-4 p-3 bg-red-50 border border-red-100 rounded-xl text-sm text-red-600">
-                    {error}{" "}
-                    <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener noreferrer" className="underline">Get a new key →</a>
-                  </div>
-                )}
-
-                <NavButtons
-                  onNext={next}
-                  onBack={back}
-                  nextDisabled={!data.anthropicValid}
-                />
+                {data.anthropicValid && <div className="mt-4 flex items-center gap-2 text-green-600 font-medium"><span>✅</span><span>Key verified</span></div>}
+                {error && <div className="mt-4 p-3 bg-red-50 border border-red-100 rounded-xl text-sm text-red-600">{error} <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener noreferrer" className="underline">Get a new key →</a></div>}
+                <NavButtons onNext={next} onBack={back} nextDisabled={!data.anthropicValid} />
               </StepCard>
             )}
 
-            {/* Step 3: Telegram */}
-            {step === 3 && (
+            {/* Step 4: Telegram */}
+            {step === 4 && (
               <StepCard>
                 <StepHeading emoji="✈️" title="Connect Telegram" />
                 <p className="text-gray-500 mb-6">Paste the token you got from @BotFather. This is how you&apos;ll chat with {data.clawName}.</p>
                 <input
                   type="text"
                   value={data.telegramToken}
-                  onChange={(e) => {
-                    setData((d) => ({ ...d, telegramToken: e.target.value, telegramValid: false, telegramUsername: "" }));
-                    setError("");
-                  }}
+                  onChange={(e) => { setData((d) => ({ ...d, telegramToken: e.target.value, telegramValid: false, telegramUsername: "" })); setError(""); }}
                   placeholder="123456789:ABCdefGHI..."
                   className="w-full border-2 border-gray-200 focus:border-indigo-500 rounded-xl px-5 py-4 outline-none transition-colors font-mono text-sm"
                   autoFocus
                 />
                 <p className="text-xs text-gray-400 mt-2">From @BotFather in Telegram</p>
-
                 {!data.telegramValid && (
-                  <button
-                    onClick={validateTelegram}
-                    disabled={loading || data.telegramToken.length < 10}
-                    className="mt-4 w-full bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-200 disabled:text-gray-400 text-white font-semibold py-3 rounded-xl transition-colors"
-                  >
+                  <button onClick={validateTelegram} disabled={loading || data.telegramToken.length < 10}
+                    className="mt-4 w-full bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-200 disabled:text-gray-400 text-white font-semibold py-3 rounded-xl transition-colors">
                     {loading ? "Testing connection..." : "Test connection →"}
                   </button>
                 )}
-
-                {data.telegramValid && (
-                  <div className="mt-4 flex items-center gap-2 text-green-600 font-medium">
-                    <span className="text-xl">✅</span>
-                    <span>Connected to @{data.telegramUsername}</span>
-                  </div>
-                )}
-
-                {error && (
-                  <div className="mt-4 p-3 bg-red-50 border border-red-100 rounded-xl text-sm text-red-600">
-                    {error}
-                  </div>
-                )}
-
-                <NavButtons
-                  onNext={next}
-                  onBack={back}
-                  nextDisabled={!data.telegramValid}
-                />
+                {data.telegramValid && <div className="mt-4 flex items-center gap-2 text-green-600 font-medium"><span>✅</span><span>Connected to @{data.telegramUsername}</span></div>}
+                {error && <div className="mt-4 p-3 bg-red-50 border border-red-100 rounded-xl text-sm text-red-600">{error}</div>}
+                <NavButtons onNext={next} onBack={back} nextDisabled={!data.telegramValid} />
               </StepCard>
             )}
 
-            {/* Step 4: Personality */}
-            {step === 4 && (
+            {/* Step 5: Personality */}
+            {step === 5 && (
               <StepCard>
                 <StepHeading emoji="✨" title={`Give ${data.clawName} a personality`} />
                 <p className="text-gray-500 mb-6">All optional — but the more you tell us, the more useful {data.clawName} will be from day one.</p>
@@ -382,13 +381,15 @@ export default function WizardPage() {
               </StepCard>
             )}
 
-            {/* Step 5: Launch */}
-            {step === 5 && (
+            {/* Step 6: Launch */}
+            {step === 6 && (
               <StepCard>
                 <StepHeading emoji="🚀" title="Everything&apos;s ready. Let&apos;s launch." />
 
                 <div className="bg-gray-50 rounded-xl p-5 space-y-3 mb-6">
-                  <SummaryRow label="Name" value={data.clawName} />
+                  <SummaryRow label="Your name" value={data.firstName} />
+                  <SummaryRow label="Email" value={data.email} />
+                  <SummaryRow label="Claw name" value={data.clawName} />
                   <SummaryRow label="Telegram bot" value={`@${data.telegramUsername}`} />
                   <SummaryRow label="Anthropic key" value={`${data.anthropicKey.slice(0, 8)}••••••••`} />
                   <SummaryRow label="Tone" value={{ friendly: "Friendly & casual", professional: "Professional", concise: "Concise & direct", funny: "Funny" }[data.personality.tone] ?? data.personality.tone} />

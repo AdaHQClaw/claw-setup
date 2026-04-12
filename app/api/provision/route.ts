@@ -34,7 +34,8 @@ export async function POST(req: NextRequest) {
 
   try {
     const body = await req.json();
-    const { clawName: rawClawName, anthropicKey, telegramToken, openaiKey, telegramUsername, personality, email } = body;
+    const { clawName: rawClawName, firstName: rawFirstName, anthropicKey, telegramToken, openaiKey, telegramUsername, personality, email } = body;
+    const firstName = (rawFirstName ?? "").toString().trim().replace(/[<>"'&]/g, "").slice(0, 50);
 
     // --- Input validation ---
     const clawName = sanitiseClawName(rawClawName ?? "");
@@ -66,6 +67,7 @@ export async function POST(req: NextRequest) {
     if (!process.env.RAILWAY_API_TOKEN) {
       await supabaseAdmin.from("claws").insert({
         claw_name: clawName,
+        first_name: firstName || null,
         email: email ?? null,
         telegram_username: telegramUsername ?? null,
         status: "pending_setup",
@@ -104,12 +106,13 @@ export async function POST(req: NextRequest) {
 
     await supabaseAdmin.from("claws").insert({
       claw_name: clawName,
+      first_name: firstName || null,
       email: email ?? null,
       telegram_username: telegramUsername ?? null,
       railway_project_id: projectId,
       railway_service_id: serviceId,
       railway_domain: domain,
-      gateway_token_hash: gatewayTokenHash, // hashed only — never plaintext
+      gateway_token_hash: gatewayTokenHash,
       status: "provisioning",
     }).throwOnError();
 
