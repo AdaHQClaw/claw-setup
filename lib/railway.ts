@@ -100,13 +100,21 @@ export async function provisionClaw(params: {
   //   agents.defaults.workspace  — sets the workspace directory where SOUL.md lives
   //
   // RAILWAY_PUBLIC_DOMAIN is injected automatically by Railway at container start.
+  // The startup script must handle Railway's volume mount timing:
+  // Railway mounts the /data volume after container start, so /data may not be
+  // writable immediately. We poll until it is before writing config.
   const startCommand =
     `node -e "` +
     `const fs=require('fs'),path=require('path');` +
     `const sd=process.env.OPENCLAW_STATE_DIR||'/data/.openclaw';` +
     `const wd=process.env.OPENCLAW_WORKSPACE_DIR||'/data/workspace';` +
-    `fs.mkdirSync(sd,{recursive:true});` +
-    `fs.mkdirSync(wd,{recursive:true});` +
+    // Wait until /data is writable (Railway volume mount timing)
+    `function waitForVolume(cb,tries){` +
+    `  tries=tries||0;` +
+    `  try{fs.mkdirSync(sd,{recursive:true});fs.mkdirSync(wd,{recursive:true});cb();}` +
+    `  catch(e){if(tries>30)throw e;setTimeout(()=>waitForVolume(cb,tries+1),1000);}` +
+    `}` +
+    `waitForVolume(function(){` +
     // Write SOUL.md to workspace
     `if(process.env.OPENCLAW_SOUL_B64){` +
     `  fs.writeFileSync(path.join(wd,'SOUL.md'),Buffer.from(process.env.OPENCLAW_SOUL_B64,'base64').toString('utf8'));` +
@@ -114,27 +122,17 @@ export async function provisionClaw(params: {
     // Write full openclaw.json
     `const domain=process.env.RAILWAY_PUBLIC_DOMAIN||'';` +
     `const cfg={` +
-    `  gateway:{` +
-    `    mode:'local',bind:'lan',` +
+    `  gateway:{mode:'local',bind:'lan',` +
     `    auth:{mode:'token',token:process.env.OPENCLAW_GATEWAY_TOKEN},` +
-    `    controlUi:{` +
-    `      basePath:'/openclaw',` +
-    `      allowedOrigins:domain?['https://'+domain]:[],` +
-    `      dangerouslyDisableDeviceAuth:true` +
-    `    }` +
+    `    controlUi:{basePath:'/openclaw',allowedOrigins:domain?['https://'+domain]:[],dangerouslyDisableDeviceAuth:true}` +
     `  },` +
     `  agents:{defaults:{workspace:wd}},` +
-    `  channels:{` +
-    `    telegram:{` +
-    `      enabled:true,` +
-    `      dmPolicy:'open',` +
-    `      allowFrom:['*']` +
-    `    }` +
-    `  }` +
+    `  channels:{telegram:{enabled:true,dmPolicy:'open',allowFrom:['*']}}` +
     `};` +
     `fs.writeFileSync(path.join(sd,'openclaw.json'),JSON.stringify(cfg));` +
-    `"` +
-    ` && openclaw gateway --port 8080`;
+    `require('child_process').spawn('openclaw',['gateway','--port','8080'],{stdio:'inherit',detached:false});` +
+    `});` +
+    `"`;
 
   await gql(token,
     `mutation ServiceInstanceUpdate($serviceId: String!, $environmentId: String!, $input: ServiceInstanceUpdateInput!) { serviceInstanceUpdate(serviceId: $serviceId, environmentId: $environmentId, input: $input) }`,
