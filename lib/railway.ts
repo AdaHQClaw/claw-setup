@@ -63,15 +63,53 @@ export async function provisionClaw(params: {
   );
   const serviceId: string = serviceData.serviceCreate.id;
 
-  // 3. Set environment variables (API keys stored here only, not in Supabase)
+  // 3. Set environment variables
+  //
+  // OC_INIT: base64-encoded Node.js init script that writes openclaw.json to /tmp
+  // and launches the gateway. Stored as env var to avoid all shell quoting issues
+  // in the Railway start command (which is passed through docker-entrypoint.sh).
+  //
+  // Why workspace is /tmp/workspace not /data/workspace:
+  //   The Railway volume at /data is owned by root. The node user gets permission
+  //   denied when trying to mkdir /data/workspace at startup. /tmp is always
+  //   writable. Persistent storage (sessions, memory) goes to /data once the
+  //   volume is accessible, but workspace files (SOUL.md, agent context) live in /tmp.
+  const initScript = `
+const fs = require('fs');
+const cp = require('child_process');
+const d = process.env.RAILWAY_PUBLIC_DOMAIN || '';
+const wd = '/tmp/workspace';
+const soul = process.env.OPENCLAW_SOUL_B64 ? Buffer.from(process.env.OPENCLAW_SOUL_B64, 'base64').toString('utf8') : '';
+const cfg = {
+  gateway: {
+    mode: 'local',
+    bind: 'lan',
+    auth: { mode: 'token', token: process.env.OPENCLAW_GATEWAY_TOKEN },
+    controlUi: {
+      basePath: '/openclaw',
+      allowedOrigins: d ? ['https://' + d] : [],
+      dangerouslyDisableDeviceAuth: true
+    }
+  },
+  agents: { defaults: { workspace: wd } },
+  channels: { telegram: { enabled: true, dmPolicy: 'open', allowFrom: ['*'] } }
+};
+fs.mkdirSync(wd, { recursive: true });
+if (soul) { try { fs.writeFileSync(wd + '/SOUL.md', soul); } catch(e) {} }
+fs.writeFileSync('/tmp/oc.json', JSON.stringify(cfg));
+console.log('cfg ok domain=' + d);
+cp.spawnSync('node', ['openclaw.mjs', 'gateway', '--port', '8080', '--allow-unconfigured'], {
+  stdio: 'inherit',
+  env: { ...process.env, OPENCLAW_CONFIG_PATH: '/tmp/oc.json' }
+});
+`;
+  const ocInit = Buffer.from(initScript).toString("base64");
+
   const envVars: Record<string, string> = {
-    OPENCLAW_GATEWAY_PORT: "8080",
+    OC_INIT: ocInit,
     OPENCLAW_GATEWAY_TOKEN: gatewayToken,
-    OPENCLAW_STATE_DIR: "/data/.openclaw",
-    OPENCLAW_WORKSPACE_DIR: "/data/workspace",
     TELEGRAM_BOT_TOKEN: params.telegramToken,
     ANTHROPIC_API_KEY: params.anthropicKey,
-    // SOUL content stored as base64 — written to workspace at startup
     OPENCLAW_SOUL_B64: Buffer.from(params.soulContent).toString("base64"),
   };
   if (params.openaiKey) envVars.OPENAI_API_KEY = params.openaiKey;
@@ -81,48 +119,12 @@ export async function provisionClaw(params: {
     { input: { projectId, environmentId, serviceId, variables: envVars } }
   );
 
-  // 4. Configure service instance (start command + healthcheck)
+  // 4. Configure service instance
   //
-  // The start command writes a complete openclaw.json and SOUL.md before launching.
-  //
-  // Why each setting is needed:
-  //   gateway.mode=local         — required, gateway refuses to start otherwise
-  //   gateway.bind=lan           — Railway bridge networking requires 0.0.0.0, not loopback
-  //   gateway.auth               — token auth using the generated OPENCLAW_GATEWAY_TOKEN
-  //   controlUi.allowedOrigins   — REQUIRED for non-loopback: without this, all browser
-  //                                WebSocket connections are rejected with "origin not allowed"
-  //   controlUi.dangerouslyDisableDeviceAuth — without this, every new browser triggers
-  //                                a pairing flow requiring `openclaw devices approve` via
-  //                                shell access — unusable for end users
-  //   channels.telegram          — explicit config with dmPolicy:"open" so the bot accepts
-  //                                messages immediately; default is "pairing" which blocks
-  //                                all new users until they complete an out-of-band approval
-  //   agents.defaults.workspace  — sets the workspace directory where SOUL.md lives
-  //
-  // RAILWAY_PUBLIC_DOMAIN is injected automatically by Railway at container start.
-  // Write config to /tmp (always writable) and point OPENCLAW_CONFIG_PATH at it.
-  // This avoids the Railway volume timing issue entirely — /data may not be writable
-  // when the container first starts because the volume is still being mounted/chowned.
-  // OpenClaw reads the config from OPENCLAW_CONFIG_PATH and writes its runtime state
-  // to OPENCLAW_STATE_DIR once the volume is available.
-  const startCommand =
-    `node -e "` +
-    `const fs=require('fs'),path=require('path');` +
-    `const wd=process.env.OPENCLAW_WORKSPACE_DIR||'/data/workspace';` +
-    // Write SOUL.md to /tmp for now; openclaw will find it when workspace is ready
-    // We also seed it into the config so it survives even if workspace isn't writable yet
-    `const domain=process.env.RAILWAY_PUBLIC_DOMAIN||'';` +
-    `const soul=process.env.OPENCLAW_SOUL_B64?Buffer.from(process.env.OPENCLAW_SOUL_B64,'base64').toString('utf8'):'';` +
-    `const cfg={` +
-    `  gateway:{mode:'local',bind:'lan',` +
-    `    auth:{mode:'token',token:process.env.OPENCLAW_GATEWAY_TOKEN},` +
-    `    controlUi:{basePath:'/openclaw',allowedOrigins:domain?['https://'+domain]:[],dangerouslyDisableDeviceAuth:true}` +
-    `  },` +
-    `  agents:{defaults:{workspace:wd,systemPrompt:soul||undefined}},` +
-    `  channels:{telegram:{enabled:true,dmPolicy:'open',allowFrom:['*']}}` +
-    `};` +
-    `fs.writeFileSync('/tmp/openclaw.json',JSON.stringify(cfg));` +
-    `" && OPENCLAW_CONFIG_PATH=/tmp/openclaw.json openclaw gateway --port 8080`;
+  // Start command: decode and eval the OC_INIT base64 script.
+  // Simple double-quoted node -e with no inner quoting issues.
+  const startCommand = `node -e "eval(Buffer.from(process.env.OC_INIT,'base64').toString())"`;
+
 
   await gql(token,
     `mutation ServiceInstanceUpdate($serviceId: String!, $environmentId: String!, $input: ServiceInstanceUpdateInput!) { serviceInstanceUpdate(serviceId: $serviceId, environmentId: $environmentId, input: $input) }`,
