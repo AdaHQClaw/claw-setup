@@ -1,13 +1,24 @@
 import { NextRequest, NextResponse } from "next/server";
+import { checkRateLimit, cleanStore } from "@/lib/ratelimit";
+import { isValidAnthropicKey } from "@/lib/sanitise";
+
+function getClientIp(req: NextRequest): string {
+  return req.headers.get("x-forwarded-for")?.split(",")[0].trim() || req.headers.get("x-real-ip") || "unknown";
+}
 
 export async function POST(req: NextRequest) {
+  cleanStore();
+  const { allowed } = checkRateLimit(`validate-anthropic:${getClientIp(req)}`);
+  if (!allowed) {
+    return NextResponse.json({ valid: false, error: "Too many attempts. Please wait before trying again." }, { status: 429 });
+  }
+
   try {
     const { apiKey } = await req.json();
-    if (!apiKey || typeof apiKey !== "string") {
-      return NextResponse.json({ valid: false, error: "No key provided" }, { status: 400 });
+    if (!apiKey || !isValidAnthropicKey(apiKey)) {
+      return NextResponse.json({ valid: false, error: "Invalid API key format. Anthropic keys start with sk-ant-" }, { status: 400 });
     }
 
-    // Make a minimal Anthropic API call to verify the key
     const res = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: {
@@ -22,7 +33,6 @@ export async function POST(req: NextRequest) {
       }),
     });
 
-    // 200 = valid, 401 = bad key, 400 = bad request (key format ok but params wrong — still valid key)
     if (res.status === 200 || res.status === 400) {
       return NextResponse.json({ valid: true });
     }

@@ -1,15 +1,39 @@
+"use client";
+
+import { useEffect, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 
-export default async function SuccessPage({
-  searchParams,
-}: {
-  searchParams: Promise<{ name?: string; username?: string; domain?: string; token?: string }>;
-}) {
-  const params = await searchParams;
-  const name = params.name ?? "Your Claw";
-  const username = params.username ?? "";
-  const domain = params.domain ?? "";
-  const token = params.token ?? "";
+export default function SuccessPage() {
+  const searchParams = useSearchParams();
+  const name = searchParams.get("name") ?? "Your Claw";
+  const username = searchParams.get("username") ?? "";
+  const domainFromParam = searchParams.get("domain") ?? "";
+
+  const [token, setToken] = useState<string | null>(null);
+  const [domain, setDomain] = useState(domainFromParam);
+  const [tokenCopied, setTokenCopied] = useState(false);
+
+  useEffect(() => {
+    // Read token from sessionStorage — never from URL params.
+    // sessionStorage is tab-scoped and never sent to servers.
+    const stored = sessionStorage.getItem("claw_gateway_token");
+    const storedDomain = sessionStorage.getItem("claw_domain");
+    if (stored) setToken(stored);
+    if (storedDomain) setDomain(storedDomain);
+    // Clear after reading — show once, then gone
+    // (user should save it; we don't store plaintext on our side)
+    sessionStorage.removeItem("claw_gateway_token");
+    sessionStorage.removeItem("claw_domain");
+  }, []);
+
+  const copyToken = () => {
+    if (!token) return;
+    navigator.clipboard.writeText(token).then(() => {
+      setTokenCopied(true);
+      setTimeout(() => setTokenCopied(false), 2000);
+    });
+  };
 
   return (
     <main className="min-h-screen bg-gray-50 px-4 py-16">
@@ -19,9 +43,10 @@ export default async function SuccessPage({
           {name} is deploying!
         </h1>
         <p className="text-xl text-gray-500 mb-10">
-          Your AI assistant is being set up. It'll be ready in about 2 minutes.
+          Your AI assistant is being set up. It&apos;ll be ready in about 2 minutes.
         </p>
 
+        {/* Primary action: Telegram */}
         <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-8 mb-6 text-left">
           <h2 className="font-bold text-gray-900 text-lg mb-4">👇 Next step</h2>
           {username ? (
@@ -34,6 +59,43 @@ export default async function SuccessPage({
           )}
         </div>
 
+        {/* Gateway token — shown once, read from sessionStorage */}
+        {token && domain && (
+          <div className="bg-amber-50 border border-amber-200 rounded-2xl p-6 mb-6 text-left">
+            <h3 className="font-semibold text-amber-900 mb-1">🔑 Save your dashboard token</h3>
+            <p className="text-sm text-amber-700 mb-4">
+              This is shown <strong>once only</strong> — we don&apos;t store it. Save it somewhere safe if you want to access your dashboard later.
+            </p>
+            <div className="space-y-3">
+              <div>
+                <p className="text-xs text-amber-600 uppercase tracking-wide mb-1">Dashboard URL</p>
+                <a
+                  href={`https://${domain}/openclaw`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-sm text-indigo-600 underline break-all"
+                >
+                  https://{domain}/openclaw
+                </a>
+              </div>
+              <div>
+                <p className="text-xs text-amber-600 uppercase tracking-wide mb-1">Gateway token</p>
+                <div className="flex items-center gap-2">
+                  <code className="text-xs bg-white border border-amber-200 px-3 py-2 rounded-lg flex-1 break-all font-mono">
+                    {token}
+                  </code>
+                  <button
+                    onClick={copyToken}
+                    className="shrink-0 px-3 py-2 bg-amber-100 hover:bg-amber-200 text-amber-800 text-xs font-medium rounded-lg transition-colors"
+                  >
+                    {tokenCopied ? "Copied!" : "Copy"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
         <div className="bg-amber-50 border border-amber-100 rounded-2xl p-5 mb-6 text-left">
           <h3 className="font-semibold text-amber-900 mb-2">⏱ First startup takes ~2 minutes</h3>
           <p className="text-sm text-amber-700">
@@ -41,29 +103,12 @@ export default async function SuccessPage({
           </p>
         </div>
 
-        {domain && token && (
-          <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 mb-6 text-left">
-            <h3 className="font-semibold text-gray-900 mb-3">🖥️ Control dashboard (optional)</h3>
-            <p className="text-sm text-gray-500 mb-3">You can manage {name} from the web dashboard. Keep your token safe — it&apos;s your password.</p>
-            <div className="space-y-2">
-              <div>
-                <p className="text-xs text-gray-400 uppercase tracking-wide mb-1">Dashboard URL</p>
-                <a href={`https://${domain}/openclaw`} target="_blank" rel="noopener noreferrer" className="text-sm text-indigo-600 underline break-all">https://{domain}/openclaw</a>
-              </div>
-              <div>
-                <p className="text-xs text-gray-400 uppercase tracking-wide mb-1">Gateway token</p>
-                <code className="text-sm bg-gray-100 px-3 py-2 rounded-lg block break-all font-mono">{token}</code>
-              </div>
-            </div>
-          </div>
-        )}
-
         <div className="bg-indigo-50 rounded-2xl p-6 mb-8 text-left">
           <h3 className="font-semibold text-indigo-900 mb-2">💡 Good to know</h3>
           <ul className="space-y-2 text-sm text-indigo-700">
             <li>• {name} runs 24/7 on Railway — always on</li>
             <li>• AI costs come from your Anthropic account (a few pence/day)</li>
-            <li>• Your API keys are stored inside your Claw only — fully isolated</li>
+            <li>• Your API keys are stored inside your Claw only — we never see them</li>
           </ul>
         </div>
 

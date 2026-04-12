@@ -123,7 +123,14 @@ export default function WizardPage() {
       if (result.success) {
         const domain = result.domain ?? "";
         const gatewayToken = result.gatewayToken ?? "";
-        router.push(`/setup/success?name=${encodeURIComponent(data.clawName)}&username=${encodeURIComponent(data.telegramUsername)}&domain=${encodeURIComponent(domain)}&token=${encodeURIComponent(gatewayToken)}`);
+        // Store token in sessionStorage, NOT in the URL.
+        // URLs are logged by browsers, servers, analytics tools, and Referer headers.
+        // sessionStorage is tab-scoped, never sent to the server, and cleared when tab closes.
+        if (typeof window !== "undefined" && gatewayToken) {
+          sessionStorage.setItem("claw_gateway_token", gatewayToken);
+          sessionStorage.setItem("claw_domain", domain);
+        }
+        router.push(`/setup/success?name=${encodeURIComponent(data.clawName)}&username=${encodeURIComponent(data.telegramUsername)}&domain=${encodeURIComponent(domain)}`);
       } else {
         setError(result.error ?? "Something went wrong. Please try again.");
         setProvisioning(false);
