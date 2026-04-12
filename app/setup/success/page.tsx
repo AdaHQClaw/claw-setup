@@ -3,12 +3,13 @@ import Link from "next/link";
 export default async function SuccessPage({
   searchParams,
 }: {
-  searchParams: Promise<{ name?: string; username?: string; domain?: string }>;
+  searchParams: Promise<{ name?: string; username?: string; domain?: string; token?: string }>;
 }) {
   const params = await searchParams;
   const name = params.name ?? "Your Claw";
   const username = params.username ?? "";
   const domain = params.domain ?? "";
+  const token = params.token ?? "";
 
   return (
     <main className="min-h-screen bg-gray-50 px-4 py-16">
@@ -40,13 +41,29 @@ export default async function SuccessPage({
           </p>
         </div>
 
+        {domain && token && (
+          <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 mb-6 text-left">
+            <h3 className="font-semibold text-gray-900 mb-3">🖥️ Control dashboard (optional)</h3>
+            <p className="text-sm text-gray-500 mb-3">You can manage {name} from the web dashboard. Keep your token safe — it&apos;s your password.</p>
+            <div className="space-y-2">
+              <div>
+                <p className="text-xs text-gray-400 uppercase tracking-wide mb-1">Dashboard URL</p>
+                <a href={`https://${domain}/openclaw`} target="_blank" rel="noopener noreferrer" className="text-sm text-indigo-600 underline break-all">https://{domain}/openclaw</a>
+              </div>
+              <div>
+                <p className="text-xs text-gray-400 uppercase tracking-wide mb-1">Gateway token</p>
+                <code className="text-sm bg-gray-100 px-3 py-2 rounded-lg block break-all font-mono">{token}</code>
+              </div>
+            </div>
+          </div>
+        )}
+
         <div className="bg-indigo-50 rounded-2xl p-6 mb-8 text-left">
           <h3 className="font-semibold text-indigo-900 mb-2">💡 Good to know</h3>
           <ul className="space-y-2 text-sm text-indigo-700">
             <li>• {name} runs 24/7 on Railway — always on</li>
             <li>• AI costs come from your Anthropic account (a few pence/day)</li>
             <li>• Your API keys are stored inside your Claw only — fully isolated</li>
-            {domain && <li>• Your Claw dashboard: <a href={`https://${domain}/openclaw`} target="_blank" rel="noopener noreferrer" className="underline">https://{domain}/openclaw</a></li>}
           </ul>
         </div>
 

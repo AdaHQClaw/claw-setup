@@ -61,6 +61,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({
       success: true,
       domain,
+      gatewayToken,
       botUsername: telegramUsername,
     });
   } catch (err) {

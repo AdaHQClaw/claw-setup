@@ -122,7 +122,8 @@ export default function WizardPage() {
       const result = await res.json();
       if (result.success) {
         const domain = result.domain ?? "";
-        router.push(`/setup/success?name=${encodeURIComponent(data.clawName)}&username=${encodeURIComponent(data.telegramUsername)}&domain=${encodeURIComponent(domain)}`);
+        const gatewayToken = result.gatewayToken ?? "";
+        router.push(`/setup/success?name=${encodeURIComponent(data.clawName)}&username=${encodeURIComponent(data.telegramUsername)}&domain=${encodeURIComponent(domain)}&token=${encodeURIComponent(gatewayToken)}`);
       } else {
         setError(result.error ?? "Something went wrong. Please try again.");
         setProvisioning(false);
