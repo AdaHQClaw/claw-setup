@@ -155,9 +155,12 @@ export async function provisionClaw(params: {
     { input: { projectId, serviceId, environmentId, mountPath: "/data" } }
   );
 
-  // 6. Create a public domain
+  // 6. Create a public domain with targetPort set to 8080
+  // targetPort is required for Railway's HTTP proxy to correctly route WebSocket traffic.
+  // Without it, Railway's Fastly CDN intercepts WebSocket upgrade requests and returns
+  // HTTP 200 instead of 101, breaking the dashboard Control UI connection entirely.
   const domainData = await gql(token,
-    `mutation { serviceDomainCreate(input: { serviceId: "${serviceId}", environmentId: "${environmentId}" }) { domain } }`
+    `mutation { serviceDomainCreate(input: { serviceId: "${serviceId}", environmentId: "${environmentId}", targetPort: 8080 }) { domain } }`
   );
   const domain: string = domainData.serviceDomainCreate?.domain ?? `${projectName}.up.railway.app`;
 
