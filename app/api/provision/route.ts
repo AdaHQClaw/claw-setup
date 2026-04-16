@@ -5,6 +5,7 @@ import { provisionClaw } from "@/lib/railway";
 import { ensureMigration } from "@/lib/migrate";
 import { checkRateLimit, cleanStore } from "@/lib/ratelimit";
 import { sanitiseClawName, isValidAnthropicKey, isValidTelegramToken, isValidEmail } from "@/lib/sanitise";
+import { notifyNewClaw } from "@/lib/slack";
 
 // Provision timeout: 45 seconds. Railway usually responds in ~10s but can be slow.
 const PROVISION_TIMEOUT_MS = 45_000;
@@ -115,6 +116,9 @@ export async function POST(req: NextRequest) {
       gateway_token_hash: gatewayTokenHash,
       status: "provisioning",
     }).throwOnError();
+
+    // --- Slack notification (fire-and-forget) ---
+    notifyNewClaw({ clawName, email, firstName, telegramUsername, domain }).catch(() => {});
 
     // --- Return token to client ---
     // Token is returned once here so the user can save it.
