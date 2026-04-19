@@ -7,8 +7,15 @@ import { checkRateLimit, cleanStore } from "@/lib/ratelimit";
 import { sanitiseClawName, sanitiseTelegramUsername, sanitisePersonalityField, escapeHtml, isValidAnthropicKey, isValidTelegramToken, isValidEmail } from "@/lib/sanitise";
 import { notifyNewClaw } from "@/lib/slack";
 
-// Provision timeout: 45 seconds. Railway usually responds in ~10s but can be slow.
-const PROVISION_TIMEOUT_MS = 45_000;
+// Tell Vercel this function can run up to 60 seconds (Pro plan max for serverless).
+// Railway provisioning takes 10–45s. Without this, Vercel cuts us at 10s default.
+export const maxDuration = 60;
+
+// Hard cap on active Railway projects under this account.
+// Railway provisions one project per user under a shared account.
+// Once this limit is reached, new signups are logged as waitlist.
+// Increase once we move to per-user Railway accounts.
+const MAX_ACTIVE_CLAWS = 50;
 
 function getClientIp(req: NextRequest): string {
   return (
@@ -16,6 +23,71 @@ function getClientIp(req: NextRequest): string {
     req.headers.get("x-real-ip") ||
     "unknown"
   );
+}
+
+function buildEmailHtml(params: {
+  clawName: string;
+  firstName: string;
+  telegramUsername: string;
+  dashboardUrl: string;
+}): string {
+  const { clawName, firstName, telegramUsername, dashboardUrl } = params;
+  const safeClawName = escapeHtml(clawName);
+  const safeFirstName = escapeHtml(firstName);
+  const safeTelegramUsername = escapeHtml(telegramUsername);
+
+  return `<!DOCTYPE html>
+<html><head><meta charset="utf-8"></head>
+<body style="margin:0;padding:0;background:#f5f3ff;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif">
+<div style="max-width:600px;margin:40px auto;background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 4px 16px rgba(0,0,0,0.10)">
+  <div style="background:linear-gradient(135deg,#7c3aed,#6d28d9);padding:28px 40px">
+    <h1 style="margin:0;color:#fff;font-size:22px;font-weight:800">${safeClawName} is deploying! 🎉</h1>
+    <p style="margin:6px 0 0;color:#ddd6fe;font-size:13px">Your personal AI assistant — powered by OpenClaw</p>
+  </div>
+  <div style="padding:36px 40px">
+    <p style="font-size:15px;color:#374151;line-height:1.8">Hi${safeFirstName ? ` ${safeFirstName}` : ""},</p>
+    <p style="font-size:15px;color:#374151;line-height:1.8">${safeClawName} is being set up right now. It&apos;ll be ready in about 2 minutes.</p>
+    <p style="font-size:15px;color:#374151;line-height:1.8"><strong>Step 1 — Open Telegram and say hello:</strong></p>
+    ${safeTelegramUsername ? `<p style="font-size:15px;color:#374151;line-height:1.8;background:#f0fdf4;border-radius:8px;padding:12px 16px;margin:8px 0">Search for <strong>@${safeTelegramUsername}</strong> in Telegram and tap Start. Wait ~2 minutes then send any message.</p>` : ""}
+    <p style="font-size:15px;color:#374151;line-height:1.8;margin-top:20px"><strong>Step 2 — Bookmark your dashboard (optional):</strong></p>
+    <div style="text-align:center;margin:16px 0 8px">
+      <a href="${dashboardUrl}" style="background:linear-gradient(135deg,#7c3aed,#6d28d9);color:#fff;text-decoration:none;padding:14px 28px;border-radius:10px;font-size:15px;font-weight:700;display:inline-block">Open ${safeClawName}&apos;s Dashboard &rarr;</a>
+    </div>
+    <p style="font-size:12px;color:#9ca3af;text-align:center;word-break:break-all"><a href="${dashboardUrl}" style="color:#7c3aed">${dashboardUrl}</a></p>
+    <p style="font-size:13px;color:#6b7280;line-height:1.7;background:#f9fafb;border-radius:8px;padding:12px 16px;margin:16px 0">This link has your access token built in. <strong>Bookmark it</strong> — if you lose it you&apos;ll need to contact support.</p>
+    <p style="font-size:13px;color:#9ca3af;line-height:1.6;margin-top:24px">— The AdaHQ team &middot; <a href="https://adahq.ai" style="color:#7c3aed;text-decoration:none">adahq.ai</a></p>
+  </div>
+  <div style="background:#fafafa;border-top:1px solid #ede9fe;padding:16px 40px;text-align:center">
+    <p style="margin:0;color:#9ca3af;font-size:12px">Sent by AdaHQ &middot; adahq.ai</p>
+  </div>
+</div>
+</body></html>`;
+}
+
+async function sendConfirmationEmail(params: {
+  to: string;
+  clawName: string;
+  firstName: string;
+  telegramUsername: string;
+  dashboardUrl: string;
+}): Promise<void> {
+  const { to, clawName, firstName, telegramUsername, dashboardUrl } = params;
+  const html = buildEmailHtml({ clawName, firstName, telegramUsername, dashboardUrl });
+  const text = `Hi${firstName ? ` ${firstName}` : ""},\n\n${clawName} is deploying and will be ready in ~2 minutes.\n\n1. Open Telegram and search for @${telegramUsername || "your bot"}. Tap Start and wait ~2 minutes.\n\n2. Your dashboard link (bookmark this):\n${dashboardUrl}\n\nThis link has your access token built in — bookmark it.\n\n— The AdaHQ team\nadahq.ai`;
+
+  await fetch("https://adahq.ai/api/internal/send-email", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-internal-secret": process.env.INTERNAL_API_SECRET ?? "",
+    },
+    body: JSON.stringify({
+      to,
+      subject: `${clawName} is deploying — here's your access link`,
+      html,
+      text,
+    }),
+  });
 }
 
 export async function POST(req: NextRequest) {
@@ -26,29 +98,34 @@ export async function POST(req: NextRequest) {
   if (!allowed) {
     return NextResponse.json(
       { success: false, error: `Too many requests. Try again in ${Math.ceil(retryAfterSeconds / 60)} minutes.` },
-      {
-        status: 429,
-        headers: { "Retry-After": String(retryAfterSeconds) },
-      }
+      { status: 429, headers: { "Retry-After": String(retryAfterSeconds) } }
     );
   }
 
   try {
     const body = await req.json();
-    const { clawName: rawClawName, firstName: rawFirstName, anthropicKey, telegramToken, openaiKey, telegramUsername: rawTelegramUsername, personality, email } = body;
+    const {
+      clawName: rawClawName,
+      firstName: rawFirstName,
+      anthropicKey,
+      telegramToken,
+      openaiKey,
+      telegramUsername: rawTelegramUsername,
+      personality,
+      email,
+    } = body;
 
-    // --- Sanitise all user inputs server-side (client-side limits are bypass-able) ---
+    // --- Server-side sanitisation (client-side limits are bypass-able) ---
     const firstName = (rawFirstName ?? "").toString().trim().replace(/[<>"'&]/g, "").slice(0, 50);
     const clawName = sanitiseClawName(rawClawName ?? "");
-    // telegramUsername comes from the client (originally from getMe, but could be tampered)
     const telegramUsername = sanitiseTelegramUsername((rawTelegramUsername ?? "").toString());
-    // Personality fields go into SOUL.md — cap length to prevent payload bloat
     const sanitisedPersonality = {
       purpose: sanitisePersonalityField(personality?.purpose),
       tone: typeof personality?.tone === "string" ? personality.tone : "friendly",
       context: sanitisePersonalityField(personality?.context),
     };
 
+    // --- Input validation ---
     if (!clawName || clawName.length < 2) {
       return NextResponse.json({ success: false, error: "Name must be at least 2 characters." }, { status: 400 });
     }
@@ -65,6 +142,67 @@ export async function POST(req: NextRequest) {
     // --- DB check ---
     await ensureMigration();
 
+    // --- Duplicate Telegram bot detection ---
+    // A bot token can only be polled by one gateway at a time.
+    // If two Claws use the same token, the second one silently never receives messages.
+    if (telegramUsername) {
+      const { data: existingBot } = await supabaseAdmin
+        .from("claws")
+        .select("id, status")
+        .eq("telegram_username", telegramUsername)
+        .neq("status", "failed")
+        .maybeSingle();
+
+      if (existingBot) {
+        return NextResponse.json({
+          success: false,
+          error: `This Telegram bot (@${telegramUsername}) is already connected to a Claw. Each bot can only be used once. Create a new bot via @BotFather and try again.`,
+        }, { status: 409 });
+      }
+    }
+
+    // --- Active Claw cap ---
+    // Prevents unbounded Railway project creation under a shared account.
+    const { count } = await supabaseAdmin
+      .from("claws")
+      .select("id", { count: "exact", head: true })
+      .neq("status", "failed");
+
+    if ((count ?? 0) >= MAX_ACTIVE_CLAWS) {
+      // Log as waitlist
+      await supabaseAdmin.from("claws").insert({
+        claw_name: clawName,
+        first_name: firstName || null,
+        email: email ?? null,
+        telegram_username: telegramUsername || null,
+        status: "waitlist",
+      });
+
+      // Notify Jamie
+      notifyNewClaw({ clawName, email, firstName, telegramUsername, domain: "WAITLISTED" }).catch(() => {});
+
+      return NextResponse.json({
+        success: false,
+        error: "We've hit our capacity limit for this week. We've added you to the waitlist and will email you as soon as a spot opens up.",
+        waitlist: true,
+      }, { status: 503 });
+    }
+
+    // --- Railway token check ---
+    if (!process.env.RAILWAY_API_TOKEN) {
+      await supabaseAdmin.from("claws").insert({
+        claw_name: clawName,
+        first_name: firstName || null,
+        email: email ?? null,
+        telegram_username: telegramUsername || null,
+        status: "pending_setup",
+      });
+      return NextResponse.json(
+        { success: false, error: "Provisioning is not configured. Please contact support@adahq.ai." },
+        { status: 503 }
+      );
+    }
+
     // --- Generate SOUL.md ---
     const soulContent = generateSoul({
       clawName,
@@ -73,22 +211,10 @@ export async function POST(req: NextRequest) {
       context: sanitisedPersonality.context,
     });
 
-    if (!process.env.RAILWAY_API_TOKEN) {
-      await supabaseAdmin.from("claws").insert({
-        claw_name: clawName,
-        first_name: firstName || null,
-        email: email ?? null,
-        telegram_username: telegramUsername ?? null,
-        status: "pending_setup",
-      }).throwOnError();
-
-      return NextResponse.json(
-        { success: false, error: "Provisioning is not yet configured. Please contact support." },
-        { status: 503 }
-      );
-    }
-
-    // --- Provision on Railway with timeout ---
+    // --- Provision on Railway ---
+    // maxDuration = 60s is set at the top of this file.
+    // Railway typically responds in 10–20s. We wait up to 55s before giving up.
+    const PROVISION_TIMEOUT_MS = 55_000;
     const provisionPromise = provisionClaw({
       clawName,
       anthropicKey,
@@ -96,9 +222,8 @@ export async function POST(req: NextRequest) {
       openaiKey,
       soulContent,
     });
-
     const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error("Provisioning timed out. Please try again.")), PROVISION_TIMEOUT_MS)
+      setTimeout(() => reject(new Error("Provisioning is taking longer than expected. We've saved your details — check your email in a few minutes.")), PROVISION_TIMEOUT_MS)
     );
 
     const { projectId, serviceId, domain, gatewayToken } = await Promise.race([
@@ -106,10 +231,8 @@ export async function POST(req: NextRequest) {
       timeoutPromise,
     ]);
 
-    // --- Store metadata in Supabase ---
-    // NOTE: API keys are NOT stored here. They live only inside the user's Railway project.
-    // gateway_token is stored hashed (sha256) — we never need to recover the plaintext,
-    // only verify it if needed for support.
+    // --- Store metadata ---
+    // API keys are NOT stored. Only hashed gateway token for support purposes.
     const { createHash } = await import("crypto");
     const gatewayTokenHash = createHash("sha256").update(gatewayToken).digest("hex");
 
@@ -117,7 +240,7 @@ export async function POST(req: NextRequest) {
       claw_name: clawName,
       first_name: firstName || null,
       email: email ?? null,
-      telegram_username: telegramUsername ?? null,
+      telegram_username: telegramUsername || null,
       railway_project_id: projectId,
       railway_service_id: serviceId,
       railway_domain: domain,
@@ -128,74 +251,34 @@ export async function POST(req: NextRequest) {
     // --- Slack notification (fire-and-forget) ---
     notifyNewClaw({ clawName, email, firstName, telegramUsername, domain }).catch(() => {});
 
-    // --- Send confirmation email with tokenized dashboard link (fire-and-forget) ---
+    // --- Confirmation email (fire-and-forget) ---
     if (email) {
       const dashboardUrl = `https://${domain}/openclaw?token=${gatewayToken}`;
-      // Escape all user-controlled values before inserting into HTML to prevent XSS.
-      // clawName and firstName come from sanitiseClawName / sanitiseFirstName (strips <>"'&)
-      // but we apply escapeHtml as a belt-and-suspenders layer.
-      const safeClawName = escapeHtml(clawName);
-      const safeFirstName = escapeHtml(firstName);
-      const safeTelegramUsername = escapeHtml(telegramUsername);
-      // dashboardUrl is constructed from our own domain + a cryptographically random token —
-      // no user input in the URL except via the Railway domain we created, which is safe.
-      const emailHtml = `<!DOCTYPE html>
-<html><head><meta charset="utf-8"></head>
-<body style="margin:0;padding:0;background:#f5f3ff;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif">
-<div style="max-width:600px;margin:40px auto;background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 4px 16px rgba(0,0,0,0.10)">
-  <div style="background:linear-gradient(135deg,#7c3aed,#6d28d9);padding:28px 40px">
-    <h1 style="margin:0;color:#fff;font-size:22px;font-weight:800">${safeClawName} is deploying! 🎉</h1>
-    <p style="margin:6px 0 0;color:#ddd6fe;font-size:13px">Your personal AI assistant — powered by OpenClaw</p>
-  </div>
-  <div style="padding:36px 40px">
-    <p style="font-size:15px;color:#374151;line-height:1.8">Hi${safeFirstName ? ` ${safeFirstName}` : ""},</p>
-    <p style="font-size:15px;color:#374151;line-height:1.8">${safeClawName} is being set up on your private server right now. It'll be ready in about 2 minutes.</p>
-    <p style="font-size:15px;color:#374151;line-height:1.8"><strong>Your dashboard link (bookmark this):</strong></p>
-    <div style="text-align:center;margin:24px 0">
-      <a href="${dashboardUrl}" style="background:linear-gradient(135deg,#7c3aed,#6d28d9);color:#fff;text-decoration:none;padding:14px 28px;border-radius:10px;font-size:16px;font-weight:700;display:inline-block">Open ${safeClawName}&apos;s Dashboard &rarr;</a>
-    </div>
-    <p style="font-size:13px;color:#9ca3af;line-height:1.6;word-break:break-all">Or copy this link: <a href="${dashboardUrl}" style="color:#7c3aed">${dashboardUrl}</a></p>
-    <p style="font-size:14px;color:#6b7280;line-height:1.7;background:#f9fafb;border-radius:8px;padding:12px 16px;margin:20px 0">This link has your access token built in. Click it and you're connected — no manual entry needed. <strong>Save it somewhere safe.</strong></p>
-    ${safeTelegramUsername ? `<p style="font-size:15px;color:#374151;line-height:1.8">You can also chat with ${safeClawName} directly on Telegram: <strong>@${safeTelegramUsername}</strong></p>` : ""}
-    <p style="font-size:15px;color:#374151;line-height:1.8;margin-top:28px">— The AdaHQ team<br>
-    <span style="color:#9ca3af;font-size:13px"><a href="https://adahq.ai" style="color:#7c3aed;text-decoration:none">adahq.ai</a></span></p>
-  </div>
-  <div style="background:#fafafa;border-top:1px solid #ede9fe;padding:16px 40px;text-align:center">
-    <p style="margin:0;color:#9ca3af;font-size:12px">Sent by AdaHQ · adahq.ai</p>
-  </div>
-</div>
-</body></html>`;
-
-      const emailText = `Hi${firstName ? ` ${firstName}` : ""},\n\n${clawName} is deploying and will be ready in ~2 minutes.\n\nYour dashboard link (bookmark this):\n${dashboardUrl}\n\nThis link has your access token built in — just click it to connect, no manual entry needed. Save it somewhere safe.\n${telegramUsername ? `\nYou can also chat with ${clawName} on Telegram: @${telegramUsername}\n` : ""}\n— The AdaHQ team\nadahq.ai`;
-
-      fetch("https://adahq.ai/api/internal/send-email", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-internal-secret": process.env.INTERNAL_API_SECRET ?? "",
-        },
-        body: JSON.stringify({
-          to: email,
-          subject: `${clawName} is deploying — here's your dashboard link`,
-          html: emailHtml,
-          text: emailText,
-        }),
+      sendConfirmationEmail({
+        to: email,
+        clawName,
+        firstName,
+        telegramUsername,
+        dashboardUrl,
       }).catch(() => {});
     }
 
-    // --- Return token to client ---
-    // Token is returned once here so the user can save it.
-    // It is NOT stored in plaintext anywhere on our side.
+    // --- Return to client ---
+    // gatewayToken is shown once on the success page. We don't store it in plaintext.
     return NextResponse.json({
       success: true,
       domain,
-      gatewayToken, // shown once on success screen — user must save it
+      gatewayToken,
       botUsername: telegramUsername,
     });
+
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
-    // Don't log the full error in case it contains key fragments
+    // Truncate to avoid leaking any key fragments in logs
     console.error("Provision error:", message.slice(0, 200));
-    return NextResponse.json({ success: false, error: message }, { status: 500 });
+    return NextResponse.json(
+      { success: false, error: message },
+      { status: 500 }
+    );
   }
 }
