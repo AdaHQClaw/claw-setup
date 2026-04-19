@@ -4,7 +4,7 @@ import { generateSoul } from "@/lib/soul";
 import { provisionClaw } from "@/lib/railway";
 import { ensureMigration } from "@/lib/migrate";
 import { checkRateLimit, cleanStore } from "@/lib/ratelimit";
-import { sanitiseClawName, isValidAnthropicKey, isValidTelegramToken, isValidEmail } from "@/lib/sanitise";
+import { sanitiseClawName, sanitiseTelegramUsername, sanitisePersonalityField, escapeHtml, isValidAnthropicKey, isValidTelegramToken, isValidEmail } from "@/lib/sanitise";
 import { notifyNewClaw } from "@/lib/slack";
 
 // Provision timeout: 45 seconds. Railway usually responds in ~10s but can be slow.
@@ -35,11 +35,19 @@ export async function POST(req: NextRequest) {
 
   try {
     const body = await req.json();
-    const { clawName: rawClawName, firstName: rawFirstName, anthropicKey, telegramToken, openaiKey, telegramUsername, personality, email } = body;
-    const firstName = (rawFirstName ?? "").toString().trim().replace(/[<>"'&]/g, "").slice(0, 50);
+    const { clawName: rawClawName, firstName: rawFirstName, anthropicKey, telegramToken, openaiKey, telegramUsername: rawTelegramUsername, personality, email } = body;
 
-    // --- Input validation ---
+    // --- Sanitise all user inputs server-side (client-side limits are bypass-able) ---
+    const firstName = (rawFirstName ?? "").toString().trim().replace(/[<>"'&]/g, "").slice(0, 50);
     const clawName = sanitiseClawName(rawClawName ?? "");
+    // telegramUsername comes from the client (originally from getMe, but could be tampered)
+    const telegramUsername = sanitiseTelegramUsername((rawTelegramUsername ?? "").toString());
+    // Personality fields go into SOUL.md — cap length to prevent payload bloat
+    const sanitisedPersonality = {
+      purpose: sanitisePersonalityField(personality?.purpose),
+      tone: typeof personality?.tone === "string" ? personality.tone : "friendly",
+      context: sanitisePersonalityField(personality?.context),
+    };
 
     if (!clawName || clawName.length < 2) {
       return NextResponse.json({ success: false, error: "Name must be at least 2 characters." }, { status: 400 });
@@ -60,9 +68,9 @@ export async function POST(req: NextRequest) {
     // --- Generate SOUL.md ---
     const soulContent = generateSoul({
       clawName,
-      purpose: personality?.purpose,
-      tone: personality?.tone,
-      context: personality?.context,
+      purpose: sanitisedPersonality.purpose,
+      tone: sanitisedPersonality.tone,
+      context: sanitisedPersonality.context,
     });
 
     if (!process.env.RAILWAY_API_TOKEN) {
@@ -123,24 +131,32 @@ export async function POST(req: NextRequest) {
     // --- Send confirmation email with tokenized dashboard link (fire-and-forget) ---
     if (email) {
       const dashboardUrl = `https://${domain}/openclaw?token=${gatewayToken}`;
+      // Escape all user-controlled values before inserting into HTML to prevent XSS.
+      // clawName and firstName come from sanitiseClawName / sanitiseFirstName (strips <>"'&)
+      // but we apply escapeHtml as a belt-and-suspenders layer.
+      const safeClawName = escapeHtml(clawName);
+      const safeFirstName = escapeHtml(firstName);
+      const safeTelegramUsername = escapeHtml(telegramUsername);
+      // dashboardUrl is constructed from our own domain + a cryptographically random token —
+      // no user input in the URL except via the Railway domain we created, which is safe.
       const emailHtml = `<!DOCTYPE html>
 <html><head><meta charset="utf-8"></head>
 <body style="margin:0;padding:0;background:#f5f3ff;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif">
 <div style="max-width:600px;margin:40px auto;background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 4px 16px rgba(0,0,0,0.10)">
   <div style="background:linear-gradient(135deg,#7c3aed,#6d28d9);padding:28px 40px">
-    <h1 style="margin:0;color:#fff;font-size:22px;font-weight:800">${clawName} is deploying! 🎉</h1>
+    <h1 style="margin:0;color:#fff;font-size:22px;font-weight:800">${safeClawName} is deploying! 🎉</h1>
     <p style="margin:6px 0 0;color:#ddd6fe;font-size:13px">Your personal AI assistant — powered by OpenClaw</p>
   </div>
   <div style="padding:36px 40px">
-    <p style="font-size:15px;color:#374151;line-height:1.8">Hi${firstName ? ` ${firstName}` : ""},</p>
-    <p style="font-size:15px;color:#374151;line-height:1.8">${clawName} is being set up on your private server right now. It'll be ready in about 2 minutes.</p>
+    <p style="font-size:15px;color:#374151;line-height:1.8">Hi${safeFirstName ? ` ${safeFirstName}` : ""},</p>
+    <p style="font-size:15px;color:#374151;line-height:1.8">${safeClawName} is being set up on your private server right now. It'll be ready in about 2 minutes.</p>
     <p style="font-size:15px;color:#374151;line-height:1.8"><strong>Your dashboard link (bookmark this):</strong></p>
     <div style="text-align:center;margin:24px 0">
-      <a href="${dashboardUrl}" style="background:linear-gradient(135deg,#7c3aed,#6d28d9);color:#fff;text-decoration:none;padding:14px 28px;border-radius:10px;font-size:16px;font-weight:700;display:inline-block">Open ${clawName}'s Dashboard →</a>
+      <a href="${dashboardUrl}" style="background:linear-gradient(135deg,#7c3aed,#6d28d9);color:#fff;text-decoration:none;padding:14px 28px;border-radius:10px;font-size:16px;font-weight:700;display:inline-block">Open ${safeClawName}&apos;s Dashboard &rarr;</a>
     </div>
     <p style="font-size:13px;color:#9ca3af;line-height:1.6;word-break:break-all">Or copy this link: <a href="${dashboardUrl}" style="color:#7c3aed">${dashboardUrl}</a></p>
     <p style="font-size:14px;color:#6b7280;line-height:1.7;background:#f9fafb;border-radius:8px;padding:12px 16px;margin:20px 0">This link has your access token built in. Click it and you're connected — no manual entry needed. <strong>Save it somewhere safe.</strong></p>
-    ${telegramUsername ? `<p style="font-size:15px;color:#374151;line-height:1.8">You can also chat with ${clawName} directly on Telegram: <strong>@${telegramUsername}</strong></p>` : ""}
+    ${safeTelegramUsername ? `<p style="font-size:15px;color:#374151;line-height:1.8">You can also chat with ${safeClawName} directly on Telegram: <strong>@${safeTelegramUsername}</strong></p>` : ""}
     <p style="font-size:15px;color:#374151;line-height:1.8;margin-top:28px">— The AdaHQ team<br>
     <span style="color:#9ca3af;font-size:13px"><a href="https://adahq.ai" style="color:#7c3aed;text-decoration:none">adahq.ai</a></span></p>
   </div>
