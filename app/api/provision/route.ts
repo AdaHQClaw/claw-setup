@@ -156,7 +156,7 @@ export async function POST(req: NextRequest) {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "x-internal-secret": "ada-internal-2026",
+          "x-internal-secret": process.env.INTERNAL_API_SECRET ?? "",
         },
         body: JSON.stringify({
           to: email,

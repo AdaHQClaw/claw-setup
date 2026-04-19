@@ -33,8 +33,10 @@ function SuccessContent() {
   };
 
   const dashboardUrl = domain ? `https://${domain}/openclaw` : null;
+  // Token is passed as a query param — the Control UI reads ?token= on load.
+  // This matches the format used in the confirmation email sent by the provision route.
   const dashboardWithToken = dashboardUrl && token
-    ? `${dashboardUrl}?gatewayUrl=wss://${domain}/openclaw#token=${token}`
+    ? `${dashboardUrl}?token=${token}`
     : null;
 
   return (

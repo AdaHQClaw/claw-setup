@@ -63,59 +63,131 @@ export async function provisionClaw(params: {
   );
   const serviceId: string = serviceData.serviceCreate.id;
 
-  // 3. Set environment variables
+  // 3. Create a public domain FIRST so we know it before setting env vars.
+  //    targetPort: 8080 is required for Railway's HTTP proxy to correctly route
+  //    WebSocket traffic. Without it, Railway's Fastly CDN intercepts WebSocket
+  //    upgrade requests and returns HTTP 200 instead of 101.
+  const domainData = await gql(token,
+    `mutation { serviceDomainCreate(input: { serviceId: "${serviceId}", environmentId: "${environmentId}", targetPort: 8080 }) { domain } }`
+  );
+  const domain: string = domainData.serviceDomainCreate?.domain ?? `${projectName}.up.railway.app`;
+
+  // 4. Build the OC_INIT script (base64-encoded Node.js startup script).
   //
-  // OC_INIT: base64-encoded Node.js init script that writes openclaw.json to /tmp
-  // and launches the gateway. Stored as env var to avoid all shell quoting issues
-  // in the Railway start command (which is passed through docker-entrypoint.sh).
+  //    This runs inside the Railway container on every startup. It:
+  //    - Writes /tmp/oc.json (the OpenClaw config) using only known-good config keys
+  //    - Writes SOUL.md into /tmp/workspace (writable by node user; /data is root-owned)
+  //    - Launches the gateway via absolute path /app/openclaw.mjs
   //
-  // Why workspace is /tmp/workspace not /data/workspace:
-  //   The Railway volume at /data is owned by root. The node user gets permission
-  //   denied when trying to mkdir /data/workspace at startup. /tmp is always
-  //   writable. Persistent storage (sessions, memory) goes to /data once the
-  //   volume is accessible, but workspace files (SOUL.md, agent context) live in /tmp.
+  //    Key design decisions:
+  //    - CLAW_DOMAIN (not RAILWAY_PUBLIC_DOMAIN): we inject the domain we know at
+  //      provision time so allowedOrigins is correct on first boot.
+  //    - /app/openclaw.mjs: absolute path avoids cwd ambiguity in the Docker image.
+  //    - anthropic plugin explicitly enabled: required for the API key to be picked up.
+  //    - Full error logging: any crash now surfaces in Railway logs.
+  //    - process.exit(1) on gateway exit: Railway ON_FAILURE restarts the service.
   const initScript = `
 const fs = require('fs');
 const cp = require('child_process');
-const d = process.env.RAILWAY_PUBLIC_DOMAIN || '';
+
+// CLAW_DOMAIN is set by us at provision time — reliable at first boot.
+// Falls back to Railway's injected var as belt-and-suspenders.
+const d = process.env.CLAW_DOMAIN || process.env.RAILWAY_PUBLIC_DOMAIN || '';
 const wd = '/tmp/workspace';
-const soul = process.env.OPENCLAW_SOUL_B64 ? Buffer.from(process.env.OPENCLAW_SOUL_B64, 'base64').toString('utf8') : '';
+const soul = process.env.OPENCLAW_SOUL_B64
+  ? Buffer.from(process.env.OPENCLAW_SOUL_B64, 'base64').toString('utf8')
+  : '';
+
 const cfg = {
   gateway: {
+    port: 8080,
     mode: 'local',
     bind: 'lan',
     auth: { mode: 'token', token: process.env.OPENCLAW_GATEWAY_TOKEN },
     controlUi: {
       basePath: '/openclaw',
       allowedOrigins: d ? ['https://' + d] : [],
-      dangerouslyDisableDeviceAuth: true
+      dangerouslyDisableDeviceAuth: true,
+      dangerouslyAllowHostHeaderOriginFallback: true,
+      allowInsecureAuth: true
     }
   },
   agents: {
     defaults: {
       workspace: wd,
-      model: { primary: 'anthropic/claude-sonnet-4-5' }
+      model: { primary: 'anthropic/claude-sonnet-4-6' },
+      skipBootstrap: false
     }
   },
-  channels: { telegram: { enabled: true, dmPolicy: 'open', allowFrom: ['*'] } }
+  channels: {
+    telegram: {
+      enabled: true,
+      dmPolicy: 'open',
+      allowFrom: ['*'],
+      groupPolicy: 'open',
+      streaming: 'partial'
+    }
+  },
+  plugins: {
+    entries: {
+      anthropic: { enabled: true, config: {} }
+    }
+  }
 };
-fs.mkdirSync(wd, { recursive: true });
-if (soul) { try { fs.writeFileSync(wd + '/SOUL.md', soul); } catch(e) {} }
-fs.writeFileSync('/tmp/oc.json', JSON.stringify(cfg));
-console.log('cfg ok domain=' + d);
-cp.spawnSync('node', ['openclaw.mjs', 'gateway', '--port', '8080', '--allow-unconfigured'], {
+
+// Create workspace directory
+try {
+  fs.mkdirSync(wd, { recursive: true });
+} catch (e) {
+  console.error('[claw-init] Failed to create workspace dir:', e.message);
+}
+
+// Write SOUL.md
+if (soul) {
+  try {
+    fs.writeFileSync(wd + '/SOUL.md', soul, 'utf8');
+    console.log('[claw-init] SOUL.md written');
+  } catch (e) {
+    console.error('[claw-init] Failed to write SOUL.md:', e.message);
+  }
+}
+
+// Write OpenClaw config
+try {
+  fs.writeFileSync('/tmp/oc.json', JSON.stringify(cfg, null, 2), 'utf8');
+  console.log('[claw-init] Config written, domain=' + (d || '(not set)'));
+} catch (e) {
+  console.error('[claw-init] Failed to write config:', e.message);
+  process.exit(1);
+}
+
+// Launch gateway using absolute path
+console.log('[claw-init] Launching OpenClaw gateway...');
+const result = cp.spawnSync('node', ['/app/openclaw.mjs', 'gateway', '--port', '8080'], {
   stdio: 'inherit',
   env: { ...process.env, OPENCLAW_CONFIG_PATH: '/tmp/oc.json' }
 });
+
+if (result.error) {
+  console.error('[claw-init] Gateway launch error:', result.error.message);
+  process.exit(1);
+}
+
+// spawnSync only returns if the child exits — gateway has crashed.
+console.error('[claw-init] Gateway exited unexpectedly, status:', result.status);
+process.exit(result.status || 1);
 `;
   const ocInit = Buffer.from(initScript).toString("base64");
 
+  // 5. Set all environment variables — including CLAW_DOMAIN now that we have it.
+  //    API keys are NOT stored in Supabase. They live only inside the user's Railway project.
   const envVars: Record<string, string> = {
     OC_INIT: ocInit,
     OPENCLAW_GATEWAY_TOKEN: gatewayToken,
     TELEGRAM_BOT_TOKEN: params.telegramToken,
     ANTHROPIC_API_KEY: params.anthropicKey,
     OPENCLAW_SOUL_B64: Buffer.from(params.soulContent).toString("base64"),
+    CLAW_DOMAIN: domain,
   };
   if (params.openaiKey) envVars.OPENAI_API_KEY = params.openaiKey;
 
@@ -124,12 +196,10 @@ cp.spawnSync('node', ['openclaw.mjs', 'gateway', '--port', '8080', '--allow-unco
     { input: { projectId, environmentId, serviceId, variables: envVars } }
   );
 
-  // 4. Configure service instance
-  //
-  // Start command: decode and eval the OC_INIT base64 script.
-  // Simple double-quoted node -e with no inner quoting issues.
+  // 6. Configure service instance.
+  //    Start command: decode OC_INIT and eval it.
+  //    healthcheckPath: /openclaw/ — Railway waits for HTTP 200 here before marking healthy.
   const startCommand = `node -e "eval(Buffer.from(process.env.OC_INIT,'base64').toString())"`;
-
 
   await gql(token,
     `mutation ServiceInstanceUpdate($serviceId: String!, $environmentId: String!, $input: ServiceInstanceUpdateInput!) { serviceInstanceUpdate(serviceId: $serviceId, environmentId: $environmentId, input: $input) }`,
@@ -144,22 +214,17 @@ cp.spawnSync('node', ['openclaw.mjs', 'gateway', '--port', '8080', '--allow-unco
     }
   );
 
-  // 5. Attach persistent volume at /data
+  // 7. Attach persistent volume at /data.
+  //    NOTE: /data is root-owned on Railway — workspace files go to /tmp/workspace instead.
+  //    The volume provides persistence for sessions, memory, and OpenClaw state files
+  //    that are written by the gateway process itself (which runs as the openclaw user
+  //    that has access once the volume is initialised by Railway's entrypoint).
   await gql(token,
     `mutation VolumeCreate($input: VolumeCreateInput!) { volumeCreate(input: $input) { id } }`,
     { input: { projectId, serviceId, environmentId, mountPath: "/data" } }
   );
 
-  // 6. Create a public domain with targetPort set to 8080
-  // targetPort is required for Railway's HTTP proxy to correctly route WebSocket traffic.
-  // Without it, Railway's Fastly CDN intercepts WebSocket upgrade requests and returns
-  // HTTP 200 instead of 101, breaking the dashboard Control UI connection entirely.
-  const domainData = await gql(token,
-    `mutation { serviceDomainCreate(input: { serviceId: "${serviceId}", environmentId: "${environmentId}", targetPort: 8080 }) { domain } }`
-  );
-  const domain: string = domainData.serviceDomainCreate?.domain ?? `${projectName}.up.railway.app`;
-
-  // 7. Trigger deployment
+  // 8. Trigger deployment
   await gql(token,
     `mutation ServiceInstanceDeploy($serviceId: String!, $environmentId: String!) { serviceInstanceDeploy(serviceId: $serviceId, environmentId: $environmentId) }`,
     { serviceId, environmentId }
