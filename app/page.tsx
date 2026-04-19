@@ -48,11 +48,11 @@ export default function HomePage() {
             href="/setup"
             className="inline-block bg-violet-600 hover:bg-violet-500 text-white font-bold text-lg px-10 py-4 rounded-2xl transition-all shadow-lg shadow-violet-900/50 hover:-translate-y-0.5 hover:shadow-xl hover:shadow-violet-900/50"
           >
-            Get my free AI assistant →
+            Get your AI assistant →
           </Link>
 
           <p className="mt-5 text-sm text-white/30">
-            5 minutes to set up · No credit card · Your data stays yours
+            5 minutes to set up · No subscription · Your data stays yours
           </p>
 
           {/* Social proof bar */}
@@ -212,7 +212,7 @@ export default function HomePage() {
             href="/setup"
             className="inline-block bg-violet-600 hover:bg-violet-500 text-white font-bold text-lg px-10 py-4 rounded-2xl transition-all shadow-lg shadow-violet-900/50 hover:-translate-y-0.5"
           >
-            Get started — it&apos;s free →
+            Get started →
           </Link>
           <p className="mt-4 text-xs text-white/25">
             Built on OpenClaw (open source) · Powered by Anthropic Claude · adahq.ai
